@@ -527,13 +527,20 @@ tbody tr:hover td { background: var(--bg2); }
 <!-- Saved Orders -->
 <div class="saved-section">
   <div class="saved-header">
-    <h2>已儲存訂單 <span id="orderCount" style="font-size:13px;font-weight:400;color:var(--text2)">(0 筆)</span></h2>
-    <button class="btn-green btn-sm" onclick="exportExcel()">↓ 匯出 Excel</button>
+    <h2>已儲存訂單 <span id="orderCount" style="font-size:13px;font-weight:400;color:var(--text2)">(0 筆)</span>
+      <span id="hiddenBadge" style="display:none;font-size:11px;font-weight:400;color:var(--danger);margin-left:6px">（部分已隱藏）</span>
+    </h2>
+    <div style="display:flex;gap:8px">
+      <button class="btn-sm" onclick="openHideOldModal()" style="color:var(--text2)" title="隱藏某日期前的訂單（僅限本機）">🗑 隱藏舊訂單</button>
+      <button id="bulkDeleteBtn" class="btn-sm" style="display:none;color:var(--danger);border-color:var(--danger)" onclick="bulkDeleteOrders()">✕ 刪除已選 <span id="bulkDeleteCount">0</span> 筆</button>
+      <button class="btn-green btn-sm" onclick="exportExcel()">↓ 匯出 Excel</button>
+    </div>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
+          <th style="width:36px;text-align:center"><input type="checkbox" id="selectAll" style="width:auto;cursor:pointer" onchange="toggleSelectAll(this.checked)" title="全選／取消全選" /></th>
           <th>訂單編號</th>
           <th>日期</th>
           <th>NAME</th>
@@ -550,7 +557,7 @@ tbody tr:hover td { background: var(--bg2); }
         </tr>
       </thead>
       <tbody id="savedBody">
-        <tr class="empty-row"><td colspan="13">尚無訂單，填寫表單後按「儲存訂單」</td></tr>
+        <tr class="empty-row"><td colspan="14">尚無訂單，填寫表單後按「儲存訂單」</td></tr>
       </tbody>
     </table>
   </div>
@@ -630,6 +637,35 @@ tbody tr:hover td { background: var(--bg2); }
   </div>
 </div>
 
+<!-- Hide Old Orders Modal -->
+<div class="modal-overlay" id="hideOldModal">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-head">
+      <span>🗑 隱藏舊訂單</span>
+      <button class="btn-danger" style="padding:4px 8px" onclick="closeHideOldModal()">✕</button>
+    </div>
+    <div class="modal-body" style="gap:14px">
+      <p style="font-size:13px;color:var(--text2);line-height:1.7">
+        選擇日期後，<b>該日期（含）之前</b>的訂單將從<b>你的畫面</b>隱藏。<br>
+        雲端資料不受影響，其他人看到的內容不會改變。
+      </p>
+      <div class="field-group">
+        <span class="field-label">隱藏此日期（含）之前的訂單</span>
+        <input type="date" id="hideBeforeDate" />
+      </div>
+      <div id="hideOldPreview" style="font-size:12px;color:var(--text2);background:var(--bg2);padding:8px 10px;border-radius:var(--radius);min-height:28px"></div>
+      <div id="hideOldCurrentStatus" style="font-size:12px;color:var(--text3)"></div>
+    </div>
+    <div class="modal-foot" style="justify-content:space-between">
+      <button onclick="clearHiddenBefore()" style="color:var(--danger)" title="顯示全部，取消隱藏">↩ 顯示全部</button>
+      <div style="display:flex;gap:8px">
+        <button onclick="closeHideOldModal()">取消</button>
+        <button class="btn-primary" onclick="applyHideOld()">✓ 套用隱藏</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -643,6 +679,8 @@ let activeSuggestIdx = -1; // 鍵盤選取的索引
 // 草稿（填一半的表單）→ 本機 localStorage（各自獨立）
 // SKU 清單 + 已儲存訂單 → Firebase 雲端（多人共用、即時同步）
 const STORE_KEY = 'orderForm_v1';   // 本機只存草稿
+const HIDDEN_BEFORE_KEY = 'orderForm_hiddenBefore'; // 本機隱藏日期門檻
+let hiddenBefore = null; // 日期字串 YYYY-MM-DD，本機隱藏此日期（含）之前的訂單
 let storageOK = true;
 let restoring = false;              // 還原期間不要反覆觸發存檔
 let cloudReady = false;             // Firebase 是否就緒
@@ -1445,22 +1483,73 @@ function deleteOrder(idx) {
   }
 }
 
+// === 本機隱藏舊訂單 ===
+function openHideOldModal() {
+  const input = document.getElementById('hideBeforeDate');
+  input.value = hiddenBefore || '';
+  updateHideOldPreview();
+  // 監聽日期變更即時更新預覽
+  input.oninput = updateHideOldPreview;
+  document.getElementById('hideOldCurrentStatus').textContent =
+    hiddenBefore ? `目前設定：隱藏 ${hiddenBefore} 之前（含）的訂單` : '目前未設定隱藏';
+  document.getElementById('hideOldModal').classList.add('show');
+}
+function closeHideOldModal() {
+  document.getElementById('hideOldModal').classList.remove('show');
+}
+function updateHideOldPreview() {
+  const val = document.getElementById('hideBeforeDate').value;
+  const el = document.getElementById('hideOldPreview');
+  if (!val) { el.textContent = '請選擇日期'; return; }
+  const count = orders.filter(o => (o.date || '') <= val).length;
+  el.textContent = `將隱藏 ${count} 筆訂單（日期 ≤ ${val}），剩餘顯示 ${orders.length - count} 筆`;
+}
+function applyHideOld() {
+  const val = document.getElementById('hideBeforeDate').value;
+  if (!val) { toast('請選擇日期'); return; }
+  hiddenBefore = val;
+  try { localStorage.setItem(HIDDEN_BEFORE_KEY, hiddenBefore); } catch(e) {}
+  closeHideOldModal();
+  renderTable();
+  toast(`已隱藏 ${hiddenBefore} 之前（含）的訂單`);
+}
+function clearHiddenBefore() {
+  hiddenBefore = null;
+  try { localStorage.removeItem(HIDDEN_BEFORE_KEY); } catch(e) {}
+  closeHideOldModal();
+  renderTable();
+  toast('已顯示全部訂單');
+}
+
 function renderTable() {
   const body = document.getElementById('savedBody');
-  document.getElementById('orderCount').textContent = `(${orders.length} 筆)`;
+  const visibleOrders = hiddenBefore
+    ? orders.filter(o => (o.date || '') > hiddenBefore)
+    : orders;
 
-  if (!orders.length) {
-    body.innerHTML = '<tr class="empty-row"><td colspan="13">尚無訂單，填寫表單後按「儲存訂單」</td></tr>';
+  // 更新計數與隱藏提示徽章
+  document.getElementById('orderCount').textContent = `(${visibleOrders.length} 筆)`;
+  const badge = document.getElementById('hiddenBadge');
+  if (badge) badge.style.display = (hiddenBefore && visibleOrders.length < orders.length) ? 'inline' : 'none';
+
+  if (!visibleOrders.length) {
+    body.innerHTML = hiddenBefore && orders.length
+      ? `<tr class="empty-row"><td colspan="14">所有訂單都在隱藏範圍內（≤ ${hiddenBefore}）<br><a href="#" onclick="clearHiddenBefore();return false" style="color:var(--accent)">點此顯示全部</a></td></tr>`
+      : '<tr class="empty-row"><td colspan="14">尚無訂單，填寫表單後按「儲存訂單」</td></tr>';
+    updateBulkDeleteBtn();
     return;
   }
 
   let html = '';
-  orders.forEach((o, oi) => {
+  visibleOrders.forEach((o, oi) => {
+    const realIdx = orders.indexOf(o);
+    const docId = o._docId || '';
     o.items.forEach((item, ii) => {
       const isFirst = ii === 0;
       const rowspan = o.items.length;
       html += '<tr>';
       if (isFirst) {
+        html += `<td rowspan="${rowspan}" style="text-align:center"><input type="checkbox" class="order-cb" data-docid="${docId}" data-idx="${realIdx}" style="width:auto;cursor:pointer" onchange="updateBulkDeleteBtn()" /></td>`;
         html += `<td rowspan="${rowspan}"><span class="nv-badge">${o.nv}</span></td>`;
         html += `<td rowspan="${rowspan}">${o.date || ''}</td>`;
         html += `<td rowspan="${rowspan}">${o.name}</td>`;
@@ -1475,12 +1564,54 @@ function renderTable() {
       html += `<td style="text-align:center">${item.qty}</td>`;
       html += `<td>${item.remark}</td>`;
       if (isFirst) {
-        html += `<td rowspan="${rowspan}"><button class="btn-danger btn-sm" onclick="deleteOrder(${oi})">✕</button></td>`;
+        html += `<td rowspan="${rowspan}"><button class="btn-danger btn-sm" onclick="deleteOrder(${realIdx})">✕</button></td>`;
       }
       html += '</tr>';
     });
   });
   body.innerHTML = html;
+  updateBulkDeleteBtn();
+}
+
+function toggleSelectAll(checked) {
+  document.querySelectorAll('.order-cb').forEach(cb => cb.checked = checked);
+  updateBulkDeleteBtn();
+}
+
+function updateBulkDeleteBtn() {
+  const cbs = document.querySelectorAll('.order-cb');
+  const selected = [...cbs].filter(cb => cb.checked);
+  const btn = document.getElementById('bulkDeleteBtn');
+  const countEl = document.getElementById('bulkDeleteCount');
+  const selectAllCb = document.getElementById('selectAll');
+  if (btn) {
+    btn.style.display = selected.length ? 'inline-flex' : 'none';
+    if (countEl) countEl.textContent = selected.length;
+  }
+  if (selectAllCb && cbs.length > 0) {
+    selectAllCb.checked = selected.length === cbs.length;
+    selectAllCb.indeterminate = selected.length > 0 && selected.length < cbs.length;
+  }
+}
+
+async function bulkDeleteOrders() {
+  const cbs = [...document.querySelectorAll('.order-cb:checked')];
+  if (!cbs.length) return;
+  if (!confirm(`確定要刪除這 ${cbs.length} 筆訂單嗎？\n（會從雲端移除，所有人都看不到）`)) return;
+
+  for (const cb of cbs) {
+    const docId = cb.dataset.docid;
+    const idx = parseInt(cb.dataset.idx);
+    if (docId) {
+      await deleteOrderCloud(docId);
+    } else {
+      orders.splice(idx, 1);
+    }
+  }
+  // 若有純本機訂單（無 docId）需手動重繪
+  if (cbs.some(cb => !cb.dataset.docid)) renderTable();
+  // 有 docId 的由 Firebase onSnapshot 自動更新
+  toast(`已刪除 ${cbs.length} 筆訂單`);
 }
 
 function clearForm() {
@@ -1603,6 +1734,8 @@ async function exportExcel() {
 
 // === 初始化 ===
 storageOK = storageAvailable();
+// 載入本機隱藏門檻
+try { hiddenBefore = localStorage.getItem(HIDDEN_BEFORE_KEY) || null; } catch(e) {}
 
 (function init() {
   // 1) 還原本機草稿（填一半的表單）
